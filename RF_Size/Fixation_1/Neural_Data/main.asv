@@ -1,0 +1,178 @@
+clear all;
+close all;
+
+tic 
+
+dirname = 'J:\Datasets';
+%% Load coordination info
+filename = 'coordination_info_v18_regenerated_for_manish';
+path = [dirname '\' filename '.mat'];
+load(path);
+
+%% Load centers.mat 
+filename = 'centers';
+path = [dirname '\' filename '.mat'];
+load(path);
+
+%% Generating neuron_info (MASTER DATA TABLE)
+neuron_info_tables = generate_neuron_info(coordination, centers1);
+
+%% Filtering out outlier neurons (BASED ON ANALYSIS --> V4 HEMISPHERE =2 ECCENTRICITY <5)
+v4_outlier_idxs_logical = (neuron_info_tables.V4_or_MT  == 1 & neuron_info_tables.recording_hemisphere == 2 & neuron_info_tables.RF1_FP1_eucledian_dist < 5);
+% Excluded neuron info
+v4_outlier_idxs = find(v4_outlier_idxs_logical ==1);
+v4_excluded_neurons = neuron_info_tables(v4_outlier_idxs,:);
+% Final neuron info after filtering excluded neurons
+final_idxs = find(v4_outlier_idxs_logical ==0);
+neuron_info_tables = neuron_info_tables(final_idxs,:);
+% saving v4_excluded_neurons
+parent = [ pwd '\Data_Files\'];
+save([parent 'v4_excluded_neurons.mat'], 'v4_excluded_neurons');
+
+
+%% SORTING NEURON INFO BASED ON ECCENTRICITY (RF1_FP1_eucledian_dist)
+neuron_info_tables = sortrows(neuron_info_tables,7);
+
+sz = size(neuron_info_tables,1);  
+%% Loop over all neuron_names
+% Parent directory for resp files
+dirname = 'C:\Users\Kaiser\Manish Gcloud\Neurons_Analysis\resp';
+
+% Initialize essential variables before loop.
+rf_boundary_cases_cnt = 0;
+rf_maps_interp = zeros(sz,36,36) ;
+rf_maps_interp_filt= zeros(sz,36,36) ;
+XoBs_interp= zeros(sz,36,36) ;
+YoBs_interp= zeros(sz,36,36) ;
+
+for idx = 1: sz
+
+    %% Load resp data    
+    filename = neuron_info_tables.neuron_resp_file_names(idx);
+    path = [dirname '\' num2str(filename) '.mat'];
+    load(path);
+    rf_map = rfmap1;
+
+    %% %%%%%%%%%%%%%%%%% Interpolation of the RF 2d CONTOUR MAP %%%%%%%%%%%
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    interp_rate = 36;
+    [XoB_interp, YoB_interp, rf_map_interp] = interp_rf_2d_contour_map(rf_map, XoB, YoB, interp_rate);
+
+%   disp ('*********************************************');
+%   disp (['Neuron: ' num2str(filename)]);
+    
+    %% Visualize RF map (Testing)       
+%         figure;
+%         surf(XoB_interp, YoB_interp, rf_map_interp);
+    
+    %% Finding index of matrix cell with the max value
+    % Max value & index in the rf_map matrix vectorized
+    [max_val, max_idx] = max(rf_map_interp(:));
+    % [p,q] = ind2sub([9,9],81)
+    % [row, col] of the max element of the rf_map_interp matrix
+    [r_max,c_max] = ind2sub(size(rf_map_interp),max_idx);
+
+
+    %% bottom + 3*std approach
+    % Gives bottom 90% elements in the rf_map_interp vector -- used to
+    % compute the baseline for the neuron
+    bottom_elem_cnt = floor(0.9* numel(rf_map_interp));
+    bottom_elem_vector = mink(rf_map_interp(:), bottom_elem_cnt);        
+    min_val = mean(bottom_elem_vector);
+    std_val = std(bottom_elem_vector);
+    thr = min_val + 3* std_val;
+
+    % Thresholded rf_map used for rf size computation
+    rf_map_interp_filt = (rf_map_interp > thr);   
+
+    % Label all the filtered based on the clusters of nearst neighbours
+    Ilabel = bwlabel(rf_map_interp_filt);
+    % cluster id corresponding to RF 
+    cluster_id = Ilabel(r_max, c_max);
+    % Indexes of cluster cells corresponding to cluster id
+    [cluster_rows, cluster_cols] = find(Ilabel == cluster_id);
+
+    rf_boundary_flag = false;    
+    %% Checking for cases where RF lies on the boundary 
+    if( numel(find(cluster_rows == 1)) ~= 0 || numel(find(cluster_cols == 1)) ~= 0 || numel(find(cluster_rows == 36)) ~= 0 || numel(find(cluster_cols == 36)) ~= 0)
+        rf_boundary_flag = true;
+        rf_boundary_cases_cnt = rf_boundary_cases_cnt +1;
+        rf_boundary_cases_indxs(rf_boundary_cases_cnt) = idx;    
+    end
+
+    % Count of number of cells in the rf_map matrix that met the threshold
+    % criteria
+    cell_cnt = sum(Ilabel(:) == cluster_id)  ;  
+    XoB_step = abs(XoB_interp(1,1) - XoB_interp(2,1) );
+    YoB_step = abs(YoB_interp(1,1) - YoB_interp(1,2) );
+    % Area of each cell in (dva)^2
+    cell_area = XoB_step * YoB_step;
+    rf_size = cell_cnt * cell_area;
+
+    %% Interpolated maps and its filtered versions saved for all neurons
+    rf_maps_interp(idx, :,:) = rf_map_interp;
+    rf_maps_interp_filt(idx, :,:) = rf_map_interp_filt;
+    XoBs_interp(idx, :,:) = XoB_interp;
+    YoBs_interp(idx, :,:) = YoB_interp;
+
+
+
+    %% Plotting the filtered RF map for inspection
+%         figure;
+%         format long e
+%         epsilon = realmin ;
+%         surf(XoB_interp, YoB_interp, rf_map_interp_filt + epsilon);
+%     % %     shading interp;
+%         colorbar;
+%     % %     view(2);
+%         view(0,90);
+%     %     pause;
+%     %     clf;
+%         
+%         figure;
+%         surf(XoB_interp, YoB_interp ,rf_map_interp);
+%         hold on;
+%         s = surf(XoB_interp, YoB_interp, ones(36,36).*thr);
+%         s.FaceColor = 'r';
+%     %     s.FaceColor = '#A2142F';
+%         s.EdgeColor = 'None';
+%         s.FaceAlpha = 0.5;
+%     %     view(0,90)
+%         hold off;
+%         pause;
+
+
+    %% Final assignments
+    if rf_boundary_flag == true
+       rf_size = -1;
+
+       %% Plotting the filtered RF map for inspection
+%             figure;
+%             surf(XoB_interp, YoB_interp ,rf_map_interp);
+%             hold on;
+%             s = surf(XoB_interp, YoB_interp, ones(36,36).*thr);
+%             s.FaceColor = 'r';
+%         %     s.FaceColor = '#A2142F';
+%             s.EdgeColor = 'None';
+%             s.FaceAlpha = 0.5;
+%         %     view(0,90)
+%             hold off;
+
+
+    end
+
+    neuron_info_tables.RF_size_frm_contours(idx) =  rf_size;
+
+    neuron_mean_fr = squeeze(nanmean(nanmean(nanmean(resp(1:80, p1, q1, :, 35:90), 4),5),1));
+    baseline_mean_fr = squeeze(nanmean(nanmean(nanmean(resp(1:80, p1, q1, :, 1:30), 4),5),1));
+    %ind=mean((squeeze(nanmean(nanmean(nanmean(nanmean(resp(1:80, 6, 6, :, 35:90), 4),3),2),1))))./mean(squeeze(nanmean(nanmean(nanmean(nanmean(resp(1:80, 6, 6, :, 1:30), 4),3),2),1)))
+    fr_ratio = neuron_mean_fr/baseline_mean_fr;
+    neuron_info_tables.fr_ratio(idx) =  fr_ratio;
+
+end
+
+toc
+
+parent = [ pwd '\Data_Files\'];
+save(['mean_plus_3std__thr_data_files_after.mat'], 'neuron_info_tables', 'rf_maps_interp', 'rf_maps_interp_filt', 'rf_boundary_cases_indxs', 'XoBs_interp', 'YoBs_interp');
+
